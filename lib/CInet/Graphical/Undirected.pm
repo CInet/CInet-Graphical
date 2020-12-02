@@ -6,14 +6,7 @@ CInet::Graphical::Undirected - Separation in undirected graphs
 
 =head1 SYNOPSIS
 
-    my $cube = CUBE(5);  # ground set 1..5
-
-    # Print the permuted ordering of 2-faces.
-    my $p = [4,1,3,5,2];
-    for my $ijK ($cube->squares) {
-        my $pijK = $cube->permute($p => $ijK);
-        say $cube->pack($ijK), ' -> ', $cube->pack($pijK);
-    }
+    ...
 
 =cut
 
@@ -30,6 +23,10 @@ use CInet::Base;
 use Scalar::Util qw(reftype);
 use Algorithm::Combinatorics qw(subsets);
 use Array::Set qw(set_union set_intersect set_diff set_symdiff);
+
+use overload (
+    q[""] => \&str,
+);
 
 =head1 DESCRIPTION
 
@@ -130,6 +127,21 @@ sub relation {
         }
     }
     $A
+}
+
+sub str {
+    my $self = shift;
+    my (@edges, @isol);
+    for my $i ($self->vertices) {
+        my $c = 0;
+        for my $j (sort keys $self->{$i}->%*) {
+            next unless $self->{$i}{$j};
+            $c++;
+            push @edges, "$i-$j" unless $j le $i;
+        }
+        push @isol, $i if not $c;
+    }
+    join ', ', @edges, @isol
 }
 
 sub UndirectedGraphs :Export(:DEFAULT) {
