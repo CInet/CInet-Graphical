@@ -20,9 +20,10 @@ use Carp;
 
 use CInet::Base;
 
-use Scalar::Util qw(reftype);
+use Math::Matrix;
+
 use Algorithm::Combinatorics qw(subsets);
-use Array::Set qw(set_union set_intersect set_diff set_symdiff);
+use Array::Set qw(set_diff);
 
 use overload (
     q[""] => \&str,
@@ -34,15 +35,31 @@ use overload (
 
 =cut
 
+sub getidx {
+    use List::SomeUtils qw(firstidx);
+    my $X = shift;
+    map {
+        my $y = $_;
+        my $idx = firstidx { $_ eq $y } @$X;
+        die "element '$y' not found" if $idx < 0;
+        $idx;
+    } @_
+}
+
 sub new {
     my ($class, $cube, @edges) = @_;
+
     my $self = bless { }, $class;
     $self->{cube} = $cube;
+    $self->{matrix} = my $matrix =
+        Math::Matrix->zeros($cube->dim);
+
     for my $ij (@edges) {
-        my ($i, $j) = @$ij;
-        $self->{$i}{$j} = 1;
-        $self->{$j}{$i} = 1;
+        my ($i, $j) = getidx($cube->set, @$ij);
+        $matrix->[$i][$j] = 1;
+        $matrix->[$j][$i] = 1;
     }
+
     $self
 }
 
@@ -52,6 +69,7 @@ sub vertices {
 
 sub drop {
     my ($self, @K) = @_;
+    my $matrix = $self->{matrix};
     my @W = set_diff($self->{cube}->set, \@K)->@*;
     my $cube = CInet::Cube->new(\@W);
 
@@ -59,7 +77,7 @@ sub drop {
     for my $i (@W) {
         for my $j (@W) {
             push @edges, [$i, $j]
-                if $self->{$i}{$j};
+                if $matrix->[$i][$j];
         }
     }
     __PACKAGE__->new($cube => @edges);
@@ -70,24 +88,14 @@ sub drop {
 # the method of summing over powers of the adjacency matrix, mainly
 # for ease of implementation, over breadth-first search.
 sub reachability {
-    use Math::Matrix;
-
     my $self = shift;
+    my $matrix = $self->{matrix};
     my @V = $self->vertices;
-    my @adj;
-    for my $i (@V) {
-        my @adji;
-        for my $j (@V) {
-            push @adji, 0+!! $self->{$i}{$j};
-        }
-        push @adj, [@adji];
-    }
 
-    my $M = Math::Matrix->new(@adj);
     my $Mk = Math::Matrix->id(0+ @V);
     my $P = Math::Matrix->zeros(0+ @V);
     for (1 .. @V) {
-        $Mk *= $M;
+        $Mk *= $matrix;
         $P += $Mk;
     }
 
@@ -131,11 +139,19 @@ sub relation {
 
 sub str {
     my $self = shift;
+    my ($cube, $matrix) = $self->@{'cube', 'matrix'};
+
+    my %lut;
+    for my $idx (0 .. $cube->set->$#*) {
+        $lut{$cube->set->[$idx]} = $idx;
+    }
+
     my (@edges, @isol);
     for my $i ($self->vertices) {
         my $c = 0;
-        for my $j (sort keys $self->{$i}->%*) {
-            next unless $self->{$i}{$j};
+        for my $j ($self->vertices) {
+            next unless $matrix->[$lut{$i}][$lut{$j}];
+
             $c++;
             push @edges, "$i-$j" unless $j le $i;
         }
