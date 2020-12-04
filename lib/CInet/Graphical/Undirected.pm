@@ -77,8 +77,9 @@ sub drop {
     my @edges;
     for my $i (@W) {
         for my $j (@W) {
+            my ($iidx, $jidx) = getidx($self->{cube}->set, $i, $j);
             push @edges, [$i, $j]
-                if $matrix->[$i][$j];
+                if $matrix->[$iidx][$jidx];
         }
     }
     __PACKAGE__->new($cube => @edges);
