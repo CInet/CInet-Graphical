@@ -18,8 +18,9 @@ use Modern::Perl 2018;
 use Export::Attrs;
 use Carp;
 
-use CInet::Base;
+use Clone qw(clone);
 
+use CInet::Base;
 use Math::Matrix;
 
 use Algorithm::Combinatorics qw(subsets);
@@ -135,6 +136,16 @@ sub relation {
         }
     }
     $A
+}
+
+sub permute {
+    my ($self, $p) = @_;
+
+    my $pself = $self->clone;
+    my $P = Math::Matrix->new([[ map { $_-1 } @$p ]])->to_permmat;
+    $pself->{matrix} = $P->transpose * $pself->{matrix} * $P;
+
+    $pself
 }
 
 sub str {
