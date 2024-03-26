@@ -6,110 +6,209 @@ CInet::Graphical::Undirected - Separation in undirected graphs
 
 =head1 SYNOPSIS
 
-    ...
+    # Construct an undirected graph on 5 vertices
+    my $G = UndirectedGraph 5 => [[1,2], [2,3], [3,4], [4,5]];
+    my $A = $G->relation; # Get its CI structure
 
 =cut
 
 # ABSTRACT: Separation in undirected graphs
 package CInet::Graphical::Undirected;
 
-use utf8;
 use Modern::Perl 2018;
 use Export::Attrs;
-use Carp;
-
-use Clone qw(clone);
+use Scalar::Util qw(blessed);
 
 use CInet::Base;
-use Math::Matrix;
+use CInet::Propositional::Families;
 
+use Graph::Undirected;
 use Algorithm::Combinatorics qw(subsets);
 use Array::Set qw(set_diff);
 
-use overload (
-    q[""] => \&str,
-);
-
 =head1 DESCRIPTION
 
-...
+This class represents an undirected graph. Every undirected graph defines
+a CI relation via its notion of I<separation>: two nodes C<i> and C<j> are
+separated given a set of nodes C<K> if every path between C<i> and C<j> in
+the graph intersects the set C<K>.
+
+Note that in particular C< (ij|) > holds if and only if there is no path
+between the two nodes, i.e., they are in distinct connected components.
+There exists a set C<K> such that C< (ij|K) > if and only if there is no
+edge between C<i> and C<j>.
+
+The CI relations arising in this way have a finite axiomatization: they
+are compositional graphoids which are upward-stable and weakly transitive.
+These axioms are available as L<MarkovNetworks|CInet::Propositional::Families>.
+
+=head2 Methods
+
+=head3 new
+
+    my $G = CInet::Graph::Undirected->new($cube => [@edges]);
+
+Construct a new undirected graph whose vertices are indexed by the ground
+set elements in C<$cube> and with edges from the array C<@edges> which
+must be passed as a reference. Each edge is encoded as a 2-element arrayref
+of elements of C<< $cube->set >>.
 
 =cut
 
-sub getidx {
-    use List::SomeUtils qw(firstidx);
-    my $X = shift;
-    map {
-        my $y = $_;
-        my $idx = firstidx { $_ eq $y } @$X;
-        die "element '$y' not found" if $idx < 0;
-        $idx;
-    } @_
-}
-
 sub new {
-    my ($class, $cube, @edges) = @_;
-
+    my $class = shift;
     my $self = bless { }, $class;
-    $self->{cube} = $cube;
-    $self->{matrix} = my $matrix =
-        Math::Matrix->zeros($cube->dim);
 
-    for my $ij (@edges) {
-        my ($i, $j) = getidx($cube->set, @$ij);
-        $matrix->[$i][$j] = 1;
-        $matrix->[$j][$i] = 1;
+    # Undocumented constructor from a Graph::Undirected.
+    if (blessed($_[0]) and $_[0]->isa('Graph::Undirected')) {
+        my $graph = shift;
+        $self->{cube} = Cube($graph->vertices);
+        $self->{graph} = $graph;
     }
-
+    else {
+        my ($cube, $edges) = @_;
+        $self->{cube} = $cube = Cube($cube);
+        $self->{graph} = my $graph = Graph::Undirected->new(
+            vertices => $cube->set,
+            edges => $edges,
+        );
+    }
     $self
 }
 
+=head3 cube
+
+    my $cube = $G->cube;
+
+Return the underlying L<CInet::Cube> which provides the vertex set of
+the graph.
+
+=cut
+
+sub cube {
+    shift->{cube}
+}
+
+=head3 vertices
+
+    my @V = $G->vertices;
+
+Return the vertices of the graph.
+
+=cut
+
 sub vertices {
-    shift->{cube}->set->@*
+    shift->{graph}->vertices
 }
 
-sub drop {
-    my ($self, @K) = @_;
-    my $matrix = $self->{matrix};
-    my @W = set_diff($self->{cube}->set, \@K)->@*;
-    my $cube = CInet::Cube->new(\@W);
+=head3 edges
 
-    my @edges;
-    for my $i (@W) {
-        for my $j (@W) {
-            my ($iidx, $jidx) = getidx($self->{cube}->set, $i, $j);
-            push @edges, [$i, $j]
-                if $matrix->[$iidx][$jidx];
-        }
+    my @E = $G->edges;
+
+Return the edges of the graph.
+
+=cut
+
+sub edges {
+    shift->{graph}->edges
+}
+
+=head3 delete
+
+    my $Gd = $G->delete($K);
+
+Delete the vertices C<$K> and all incident edges from the graph.
+This is the induced subgraph on the complement of C<$K>.
+
+=cut
+
+sub delete {
+    my ($self, $K) = @_;
+    my $graph = $self->{graph}->copy;
+    __PACKAGE__->new($graph->delete_vertices(@$K))
+}
+
+=head3 contract
+
+    my $Gc = $G->contract($K);
+
+Contract the vertices C<$K> in the graph. This removes each vertex
+in C<$K> and for each removed vertex, its neighbors are connected
+into a clique.
+
+=cut
+
+sub contract {
+    my ($self, $K) = @_;
+    my $graph = $self->{graph}->copy;
+    for my $k (@$K) {
+        my $neigh = set_diff([$graph->neighbors($k)], $K);
+        $graph->delete_vertex($k);
+        $graph->add_edges(map @$_, subsets($neigh, 2));
     }
-    __PACKAGE__->new($cube => @edges);
+    __PACKAGE__->new($graph)
 }
 
-# Return a double hashref $r such that $r->{$i}{$j} indicates whether
-# $i and $j are in the same connected component. The algorithm uses
-# the method of summing over powers of the adjacency matrix, mainly
-# for ease of implementation, over breadth-first search.
-sub reachability {
+=head3 paths
+
+    my @all    = $G->paths;
+    my @fromto = $G->paths($i => $j);
+
+Given vertices C<$i> and C<$j> in the graph, returns all simple paths
+between these vertices. If no vertices are given, all simple paths in
+the graph are returned.
+
+=cut
+
+sub paths {
     my $self = shift;
-    my $matrix = $self->{matrix};
-    my @V = $self->vertices;
-
-    my $Mk = Math::Matrix->id(0+ @V);
-    my $P = Math::Matrix->zeros(0+ @V);
-    for (1 .. @V) {
-        $Mk *= $matrix;
-        $P += $Mk;
+    my $graph = $self->{graph};
+    if (@_ == 0) { # all paths
+        return map { $graph->all_paths(@$_) } subsets($self->{cube}->set, 2);
     }
-
-    my %reach;
-    for my $p (0 .. $#V) {
-        for my $q (0 .. $#V) {
-            $reach{$V[$p]}->{$V[$q]} = 0+!! $P->[$p][$q];
-        }
+    else { # from $i to $j
+        return $graph->all_paths(@_);
     }
-
-    \%reach
 }
+
+=head3 is_connected
+
+    my $bool = $G->is_connected;
+
+Return if the graph is connected.
+
+=cut
+
+sub is_connected {
+    shift->{graph}->is_connected
+}
+
+=head3 connected_components
+
+    my @C = $G->connected_components;
+
+Return the connected components as CInet::Graphical::Undirected objects.
+The cubes of the components are over subsets of the original ground set.
+
+=cut
+
+sub connected_components {
+    my $self = shift;
+    return $self if $self->is_connected;
+    my $graph = $self->{graph};
+    map { __PACKAGE__->new($graph->subgraph($_)) } $graph->connected_components
+}
+
+=head3 ci
+
+    my $bool = $G->ci($ijK);
+
+Return whether a square C<$ijK> of C<< $G->cube >> represents a separation
+statement in the graph. This checks whether every path from C<$i> to C<$j>
+intersects C<$K>, or equivalently if removing C<$K> disconnects C<$i> and
+C<$j>.
+
+=cut
 
 sub ci {
     my ($self, $ijK) = @_;
@@ -118,65 +217,107 @@ sub ci {
 
     # Check if i and j are in different connected components
     # after $K is removed from the graph.
-    not $self->drop(@$K)->reachability->{$i}{$j}
+    my $graph = $self->{graph}->copy;
+    $graph->delete_vertices(@$K)->is_reachable($i, $j)
 }
+
+=head3 relation
+
+    my $A = $G->relation;
+
+Compute the L<CInet::Relation> of the graph containing all separation
+statements. For individual statements, see L<ci|/"ci">.
+
+=cut
 
 sub relation {
     my $self = shift;
-    my $cube = $self->{cube};
-    my $n = $cube->set->@*;
-    my $A = CInet::Relation->new($cube);
-    for my $K (subsets($cube->set)) {
-        next if @$K > $n - 2;
-        my $GK = $self->drop(@$K);
-        my $r = $GK->reachability;
-        for my $ij (subsets([$GK->vertices], 2)) {
-            my ($i, $j) = @$ij;
-            my $ijK = [ $ij, $K ];
-            $A->[$cube->pack($ijK)] = 0+!! $r->{$i}{$j};
-        }
+    my ($cube, $graph) = $self->@{'cube', 'graph'};
+    my $N = $cube->set;
+    my $A = CInet::Relation->new($cube, '1' x $cube->squares);
+    for (subsets($N, 2)) {
+        my $ijK = [ $_, set_diff($N, $_) ];
+        $A->cival($ijK) = 0 unless $graph->has_edge(@$_);
     }
-    $A
+    Gaussoids->completion($A)
 }
+
+=head3 permute
+
+    my $Gp = $G->permute($p);
+
+Apply a permutation of the vertex set. The resulting graph exists
+over the same ground set (with the same C<$cube>).
+
+=cut
 
 sub permute {
     my ($self, $p) = @_;
-
-    my $pself = $self->clone;
-    my $P = Math::Matrix->new([[ map { $_-1 } @$p ]])->to_permmat;
-    $pself->{matrix} = $P->transpose * $pself->{matrix} * $P;
-
-    $pself
+    my $i = 0;
+    my %lut = map { $_ => $p->[$i++] } $self->{cube}->set->@*;
+    my $perm = sub { $lut{$_[0]} };
+    my $graph = $self->{graph}->copy;
+    __PACKAGE__->new($self->{cube} => [$graph->rename_vertices($perm)->edges])
 }
 
-sub str {
+=head3 description
+
+    my $str = $G->description;
+
+Returns a human-readable description of the object.
+
+=cut
+
+sub description {
     my $self = shift;
-    my ($cube, $matrix) = $self->@{'cube', 'matrix'};
-
-    my %lut;
-    for my $idx (0 .. $cube->set->$#*) {
-        $lut{$cube->set->[$idx]} = $idx;
-    }
-
-    my (@edges, @isol);
-    for my $i ($self->vertices) {
-        my $c = 0;
-        for my $j ($self->vertices) {
-            next unless $matrix->[$lut{$i}][$lut{$j}];
-
-            $c++;
-            push @edges, "$i-$j" unless $j le $i;
-        }
-        push @isol, $i if not $c;
-    }
-    join ', ', @edges, @isol
+    'Undirected graph on vertices ' . join(', ', $self->vertices) .
+    ' with edges ' . join(', ', map { join('-', @$_) } $self->edges)
 }
+
+=head2 Exports
+
+=head3 UndirectedGraph :Export(:DEFAULT)
+
+    my $G = UndirectedGraph(@args);
+
+This is a shorthand for the C<< CInet::Undireced->new >> constructor.
+
+This sub is exported by default.
+
+=cut
+
+sub UndirectedGraph :Export(:DEFAULT) {
+    __PACKAGE__->new(@_)
+}
+
+=head3 UndirectedGraphs :Export(:DEFAULT)
+
+    my $seq = UndirectedGraphs($cube);
+
+Returns a lazy sequence of all undirected graphs on the ground set
+of C<$cube>.
+
+=cut
 
 sub UndirectedGraphs :Export(:DEFAULT) {
-    my $cube = CUBE(shift);
-    my @edges = subsets($cube->set, 2);
-    map { __PACKAGE__->new($cube, @$_) }
-        subsets(\@edges)
+    my $cube = Cube(shift);
+    my $it = subsets($cube->set, 2);
+    CInet::Seq::Wrapper->new($it)->map(sub{
+        __PACKAGE__->new($cube, $_)
+    })
 }
+
+=head1 AUTHOR
+
+Tobias Boege <tobs@taboege.de>
+
+=head1 COPYRIGHT AND LICENSE
+
+This software is copyright (C) 2024 by Tobias Boege.
+
+This is free software; you can redistribute it and/or
+modify it under the terms of the Artistic License 2.0.
+
+=cut
 
 ":wq"
